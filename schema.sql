@@ -27,14 +27,15 @@ CREATE TABLE product_modifier_groups (
 );
 
 CREATE TABLE tickets (
-  id               SERIAL PRIMARY KEY,
-  status           TEXT NOT NULL DEFAULT 'paid',
-  subtotal_cents   INTEGER NOT NULL,
-  tax_cents        INTEGER NOT NULL,
-  total_cents      INTEGER NOT NULL,
-  tendered_cents   INTEGER NOT NULL,
-  change_cents     INTEGER NOT NULL,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  id                 SERIAL PRIMARY KEY,
+  status             TEXT NOT NULL DEFAULT 'paid',
+  subtotal_cents     INTEGER NOT NULL,
+  tax_cents          INTEGER NOT NULL,
+  total_cents        INTEGER NOT NULL,
+  tendered_cents     INTEGER NOT NULL,
+  change_cents       INTEGER NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  client_ticket_id   TEXT UNIQUE
 );
 
 CREATE TABLE ticket_items (

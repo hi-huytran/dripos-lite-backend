@@ -41,4 +41,5 @@ export interface CreateTicketItemInput {
 export interface CreateTicketRequestBody {
   items: CreateTicketItemInput[];
   tenderedCents: number;
+  clientTicketId?: string;
 }

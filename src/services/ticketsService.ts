@@ -1,6 +1,7 @@
 import * as productsRepository from "../repositories/productsRepository";
 import * as ticketsRepository from "../repositories/ticketsRepository";
 import { ProductSummaryRow } from "../repositories/productsRepository";
+import { TicketDetailRow } from "../repositories/ticketsRepository";
 import {
   CreateTicketItemInput,
   Ticket,
@@ -158,8 +159,63 @@ function validateAndPriceItems(
   return pricedItems;
 }
 
+function assembleTicketFromRows(rows: TicketDetailRow[]): Ticket {
+  const first = rows[0];
+  const itemsById = new Map<number, TicketItem>();
+
+  for (const row of rows) {
+    if (!row.item_id) continue;
+
+    let item = itemsById.get(row.item_id);
+    if (!item) {
+      item = {
+        productId: row.product_id as string,
+        productName: row.product_name as string,
+        quantity: row.quantity as number,
+        unitPriceCents: row.unit_price_cents as number,
+        lineTotalCents: row.line_total_cents as number,
+        modifiers: [],
+      };
+      itemsById.set(row.item_id, item);
+    }
+
+    if (row.modifier_option_id) {
+      item.modifiers.push({
+        optionId: row.modifier_option_id,
+        optionName: row.option_name as string,
+        priceDeltaCents: row.price_delta_cents as number,
+      });
+    }
+  }
+
+  return {
+    id: first.ticket_id,
+    status: first.status,
+    items: Array.from(itemsById.values()),
+    subtotalCents: first.subtotal_cents,
+    taxCents: first.tax_cents,
+    totalCents: first.total_cents,
+    tenderedCents: first.tendered_cents,
+    changeCents: first.change_cents,
+    createdAt: first.created_at,
+  };
+}
+
 export async function createTicket(body: any): Promise<Ticket> {
-  const { items, tenderedCents } = body ?? {};
+  const { items, tenderedCents, clientTicketId } = body ?? {};
+
+  const hasClientTicketId =
+    typeof clientTicketId === "string" && clientTicketId.length > 0;
+
+  if (hasClientTicketId) {
+    const existingRows =
+      await ticketsRepository.findTicketDetailRowsByClientTicketId(
+        clientTicketId
+      );
+    if (existingRows.length > 0) {
+      return assembleTicketFromRows(existingRows);
+    }
+  }
 
   if (!Array.isArray(items) || items.length === 0) {
     throw new ValidationError("Cart cannot be empty");
@@ -202,13 +258,17 @@ export async function createTicket(body: any): Promise<Ticket> {
     throw new ValidationError("Amount tendered does not cover the total");
   }
 
-  return ticketsRepository.createTicket(pricedItems, {
-    subtotalCents,
-    taxCents,
-    totalCents,
-    tenderedCents,
-    changeCents,
-  });
+  return ticketsRepository.createTicket(
+    pricedItems,
+    {
+      subtotalCents,
+      taxCents,
+      totalCents,
+      tenderedCents,
+      changeCents,
+    },
+    hasClientTicketId ? clientTicketId : undefined
+  );
 }
 
 export async function listTickets(): Promise<TicketListItem[]> {
@@ -232,43 +292,5 @@ export async function getTicketById(idParam: string): Promise<Ticket | null> {
     return null;
   }
 
-  const first = rows[0];
-  const itemsById = new Map<number, TicketItem>();
-
-  for (const row of rows) {
-    if (!row.item_id) continue;
-
-    let item = itemsById.get(row.item_id);
-    if (!item) {
-      item = {
-        productId: row.product_id as string,
-        productName: row.product_name as string,
-        quantity: row.quantity as number,
-        unitPriceCents: row.unit_price_cents as number,
-        lineTotalCents: row.line_total_cents as number,
-        modifiers: [],
-      };
-      itemsById.set(row.item_id, item);
-    }
-
-    if (row.modifier_option_id) {
-      item.modifiers.push({
-        optionId: row.modifier_option_id,
-        optionName: row.option_name as string,
-        priceDeltaCents: row.price_delta_cents as number,
-      });
-    }
-  }
-
-  return {
-    id: first.ticket_id,
-    status: first.status,
-    items: Array.from(itemsById.values()),
-    subtotalCents: first.subtotal_cents,
-    taxCents: first.tax_cents,
-    totalCents: first.total_cents,
-    tenderedCents: first.tendered_cents,
-    changeCents: first.change_cents,
-    createdAt: first.created_at,
-  };
+  return assembleTicketFromRows(rows);
 }
