@@ -13,6 +13,14 @@ export interface TicketItem {
   modifiers: TicketItemModifier[];
 }
 
+export interface Payment {
+  id: number;
+  tenderedCents: number;
+  appliedCents: number;
+  changeCents: number;
+  createdAt: Date;
+}
+
 export interface Ticket {
   id: number;
   status: string;
@@ -20,9 +28,11 @@ export interface Ticket {
   subtotalCents: number;
   taxCents: number;
   totalCents: number;
-  tenderedCents: number;
-  changeCents: number;
+  tenderedCents: number | null;
+  changeCents: number | null;
   createdAt: Date;
+  remainingCents: number;
+  payments: Payment[];
 }
 
 export interface TicketListItem {
@@ -40,6 +50,10 @@ export interface CreateTicketItemInput {
 
 export interface CreateTicketRequestBody {
   items: CreateTicketItemInput[];
-  tenderedCents: number;
   clientTicketId?: string;
+}
+
+export interface AddPaymentRequestBody {
+  tenderedCents: number;
+  clientPaymentId?: string;
 }

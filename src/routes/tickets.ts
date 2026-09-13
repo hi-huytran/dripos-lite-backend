@@ -42,4 +42,22 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+router.post("/:id/payments", async (req, res) => {
+  try {
+    const result = await ticketsService.addPayment(req.params.id, req.body);
+
+    if (!result) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+
+    res.json(result);
+  } catch (err) {
+    if (err instanceof ValidationError) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error(err);
+    res.status(500).json({ error: "Failed to record payment" });
+  }
+});
+
 export default router;

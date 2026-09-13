@@ -1,9 +1,13 @@
 import * as productsRepository from "../repositories/productsRepository";
 import * as ticketsRepository from "../repositories/ticketsRepository";
 import { ProductSummaryRow } from "../repositories/productsRepository";
-import { TicketDetailRow } from "../repositories/ticketsRepository";
+import {
+  PaymentRow,
+  TicketDetailRow,
+} from "../repositories/ticketsRepository";
 import {
   CreateTicketItemInput,
+  Payment,
   Ticket,
   TicketItem,
   TicketItemModifier,
@@ -159,7 +163,20 @@ function validateAndPriceItems(
   return pricedItems;
 }
 
-function assembleTicketFromRows(rows: TicketDetailRow[]): Ticket {
+function toPaymentApiShape(row: PaymentRow): Payment {
+  return {
+    id: row.id,
+    tenderedCents: row.tendered_cents,
+    appliedCents: row.applied_cents,
+    changeCents: row.change_cents,
+    createdAt: row.created_at,
+  };
+}
+
+function assembleTicketFromRows(
+  rows: TicketDetailRow[],
+  paymentRows: PaymentRow[]
+): Ticket {
   const first = rows[0];
   const itemsById = new Map<number, TicketItem>();
 
@@ -188,6 +205,12 @@ function assembleTicketFromRows(rows: TicketDetailRow[]): Ticket {
     }
   }
 
+  const payments = paymentRows.map(toPaymentApiShape);
+  const sumAppliedCents = payments.reduce(
+    (sum, payment) => sum + payment.appliedCents,
+    0
+  );
+
   return {
     id: first.ticket_id,
     status: first.status,
@@ -198,11 +221,17 @@ function assembleTicketFromRows(rows: TicketDetailRow[]): Ticket {
     tenderedCents: first.tendered_cents,
     changeCents: first.change_cents,
     createdAt: first.created_at,
+    remainingCents:
+      first.status === "paid" ? 0 : first.total_cents - sumAppliedCents,
+    payments,
   };
 }
 
 export async function createTicket(body: any): Promise<Ticket> {
-  const { items, tenderedCents, clientTicketId } = body ?? {};
+  // tenderedCents is intentionally not read here: payment no longer
+  // happens at ticket creation, so any tenderedCents a client still sends
+  // is silently ignored rather than rejected.
+  const { items, clientTicketId } = body ?? {};
 
   const hasClientTicketId =
     typeof clientTicketId === "string" && clientTicketId.length > 0;
@@ -213,7 +242,10 @@ export async function createTicket(body: any): Promise<Ticket> {
         clientTicketId
       );
     if (existingRows.length > 0) {
-      return assembleTicketFromRows(existingRows);
+      const paymentRows = await ticketsRepository.findPaymentsByTicketId(
+        existingRows[0].ticket_id
+      );
+      return assembleTicketFromRows(existingRows, paymentRows);
     }
   }
 
@@ -242,21 +274,12 @@ export async function createTicket(body: any): Promise<Ticket> {
     groupsByProduct
   );
 
-  if (!Number.isInteger(tenderedCents) || tenderedCents < 0) {
-    throw new ValidationError("Invalid tendered amount");
-  }
-
   const subtotalCents = pricedItems.reduce(
     (sum, item) => sum + item.lineTotalCents,
     0
   );
   const taxCents = Math.round(subtotalCents * TAX_RATE);
   const totalCents = subtotalCents + taxCents;
-  const changeCents = tenderedCents - totalCents;
-
-  if (tenderedCents < totalCents) {
-    throw new ValidationError("Amount tendered does not cover the total");
-  }
 
   return ticketsRepository.createTicket(
     pricedItems,
@@ -264,8 +287,6 @@ export async function createTicket(body: any): Promise<Ticket> {
       subtotalCents,
       taxCents,
       totalCents,
-      tenderedCents,
-      changeCents,
     },
     hasClientTicketId ? clientTicketId : undefined
   );
@@ -292,5 +313,98 @@ export async function getTicketById(idParam: string): Promise<Ticket | null> {
     return null;
   }
 
-  return assembleTicketFromRows(rows);
+  const paymentRows = await ticketsRepository.findPaymentsByTicketId(
+    ticketId
+  );
+  return assembleTicketFromRows(rows, paymentRows);
+}
+
+export interface AddPaymentResult {
+  payment: Payment;
+  ticket: {
+    id: number;
+    status: string;
+    remainingCents: number;
+  };
+}
+
+export async function addPayment(
+  idParam: string,
+  body: any
+): Promise<AddPaymentResult | null> {
+  const ticketId = Number(idParam);
+  if (!Number.isInteger(ticketId)) {
+    return null;
+  }
+
+  const ticket = await ticketsRepository.findTicketById(ticketId);
+  if (!ticket) {
+    return null;
+  }
+
+  const { tenderedCents, clientPaymentId } = body ?? {};
+  const hasClientPaymentId =
+    typeof clientPaymentId === "string" && clientPaymentId.length > 0;
+
+  // Idempotent replay check comes first (mirroring clientTicketId on
+  // POST /tickets), so retrying the exact payment that completed a ticket
+  // still returns success instead of tripping the "already paid" check
+  // below.
+  if (hasClientPaymentId) {
+    const existingPayment =
+      await ticketsRepository.findPaymentByClientPaymentId(
+        ticketId,
+        clientPaymentId
+      );
+    if (existingPayment) {
+      const sumAppliedCents = await ticketsRepository.sumAppliedCentsForTicket(
+        ticketId
+      );
+      return {
+        payment: toPaymentApiShape(existingPayment),
+        ticket: {
+          id: ticket.id,
+          status: ticket.status,
+          remainingCents:
+            ticket.status === "paid"
+              ? 0
+              : ticket.total_cents - sumAppliedCents,
+        },
+      };
+    }
+  }
+
+  if (ticket.status === "paid") {
+    throw new ValidationError("ticket is already paid");
+  }
+
+  if (!Number.isInteger(tenderedCents) || tenderedCents <= 0) {
+    throw new ValidationError("Invalid tendered amount");
+  }
+
+  const sumAppliedCents = await ticketsRepository.sumAppliedCentsForTicket(
+    ticketId
+  );
+  const remainingCents = ticket.total_cents - sumAppliedCents;
+  const appliedCents = Math.min(tenderedCents, remainingCents);
+  const changeCents = tenderedCents - appliedCents;
+  const willBePaid = appliedCents === remainingCents;
+
+  const paymentRow = await ticketsRepository.addPayment(
+    ticketId,
+    tenderedCents,
+    appliedCents,
+    changeCents,
+    hasClientPaymentId ? clientPaymentId : undefined,
+    willBePaid ? "paid" : null
+  );
+
+  return {
+    payment: toPaymentApiShape(paymentRow),
+    ticket: {
+      id: ticket.id,
+      status: willBePaid ? "paid" : "pending_payment",
+      remainingCents: remainingCents - appliedCents,
+    },
+  };
 }
